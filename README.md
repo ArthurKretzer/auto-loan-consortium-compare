@@ -100,6 +100,33 @@ Contribuições são bem-vindas! Se você deseja melhorar a lógica de cálculo,
 4. Faça o **Push** para a Branch (`git push origin feature/nova-logica`).
 5. Abra um **Pull Request**.
 
+## 🚀 Como Publicar no GitHub Pages
+
+Este projeto já está configurado para deploy automático no GitHub Pages.
+
+1. **Inicialize o Git (se ainda não fez)**:
+
+   ```bash
+   git init
+   git remote add origin https://github.com/ArthurKretzer/auto-loan-consortium-compare.git
+   ```
+
+2. **Faça o Commit e Push**:
+
+   ```bash
+   git add .
+   git commit -m "Commit inicial"
+   git push -u origin main
+   ```
+
+3. **Faça o Deploy**:
+
+   ```bash
+   npm run deploy
+   ```
+
+O site estará disponível em: `https://ArthurKretzer.github.io/auto-loan-consortium-compare`
+
 ## 📄 Licença
 
 Este projeto é de uso livre para fins educacionais e pessoais.
