@@ -1,5 +1,7 @@
-import { AlertCircle, ArrowRightLeft, Calculator, Calendar, DollarSign, Percent, Plus, Trash2, TrendingUp } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { toPng } from 'html-to-image';
+import jsPDF from 'jspdf';
+import { AlertCircle, ArrowRightLeft, Calculator, Calendar, DollarSign, Download, Percent, Plus, Trash2, TrendingUp } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 const Card = ({ title, value, subtext, highlight, icon: Icon }) => (
@@ -81,7 +83,13 @@ const EventList = ({ title, events, onAdd, onRemove, maxMonth }) => {
 };
 
 function App() {
+  const dashboardRef = useRef(null);
+
   // --- State (Inputs) ---
+  // Scenario Naming
+  const [finLabel, setFinLabel] = useState("Financiamento");
+  const [consLabel, setConsLabel] = useState("Consórcio");
+
   // Financing State
   const [finVehicleValue, setFinVehicleValue] = useState(80000);
   const [finTermMonths, setFinTermMonths] = useState(60);
@@ -153,8 +161,8 @@ function App() {
     // Current Principal Installment (Floating, affected by Inflation & Bids based on Strategy)
     let currentConsPrincipalPMT = consPrincipalBalance / consTermMonths;
     // We need to track 'Virtual Remaining Months' for 'reduce_term' strategy to know if we finished early?
-    // Actually simpler: we just pay until balance is 0. 
-    // BUT for 'reduce_term', we maintain the PMT value. 
+    // Actually simpler: we just pay until balance is 0.
+    // BUT for 'reduce_term', we maintain the PMT value.
     // For 'reduce_installment', we recalculate PMT to fit the Original Term.
 
     let consAccumulatedPaid = consDownPayment;
@@ -309,8 +317,7 @@ function App() {
 
   const { data, financingTotal, consortiumTotal, financingInitialPMT, consortiumInitialPMT } = simulationData;
   const difference = financingTotal - consortiumTotal;
-  const betterOption = difference > 0 ? "Consórcio" : "Financiamento PRICE";
-
+  const betterOption = difference > 0 ? consLabel : finLabel;
   const savings = Math.abs(difference);
 
   const formatCurrency = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
@@ -324,7 +331,7 @@ function App() {
             <div key={index} className="mb-2 last:mb-0">
               <div className="flex items-center gap-2 font-semibold" style={{ color: entry.color }}>
                 <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                {entry.name}
+                {entry.name === 'financing' ? finLabel : entry.name === 'consortium' ? consLabel : entry.name}
               </div>
               <div className="ml-4 text-xs text-slate-300">
                 Acumulado: {formatCurrency(entry.value)}
@@ -338,6 +345,30 @@ function App() {
       );
     }
     return null;
+  };
+
+  const handleExportPDF = async () => {
+    if (!dashboardRef.current) return;
+
+    try {
+      // Use html-to-image instead of html2canvas
+      const dataUrl = await toPng(dashboardRef.current, { cacheBust: true, backgroundColor: '#f8fafc' });
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+
+      // Load image to get dimensions
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise(resolve => img.onload = resolve);
+
+      const pdfHeight = (img.height * pdfWidth) / img.width;
+
+      pdf.addImage(dataUrl, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save('simulacao-financeira.pdf');
+    } catch (err) {
+      console.error("PDF Export failed", err);
+      alert("Erro ao exportar PDF: " + err.message);
+    }
   };
 
   return (
@@ -357,9 +388,17 @@ function App() {
 
         <div className="space-y-8">
           <section>
-            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">
-              <DollarSign className="w-4 h-4" /> Financiamento PRICE
-            </h3>
+            {/* Name Input for Financing */}
+            <div className="flex items-center gap-2 mb-4">
+              <DollarSign className="w-4 h-4 text-slate-400" />
+              <input
+                type="text"
+                value={finLabel}
+                onChange={(e) => setFinLabel(e.target.value)}
+                className="font-bold text-slate-600 border-none bg-transparent focus:ring-0 focus:border-b focus:border-indigo-500 p-0 w-full"
+              />
+            </div>
+
             <SliderInput label="Valor do Veículo" value={finVehicleValue} min={20000} max={500000} step={1000} prefix="R$ " onChange={setFinVehicleValue} />
             <SliderInput label="Entrada" value={finDownPayment} min={0} max={finVehicleValue * 0.9} step={1000} prefix="R$ " onChange={setFinDownPayment} />
             <SliderInput label="Prazo (Meses)" value={finTermMonths} min={12} max={120} step={12} onChange={setFinTermMonths} />
@@ -386,9 +425,17 @@ function App() {
           </section>
 
           <section>
-            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">
-              <ArrowRightLeft className="w-4 h-4" /> Consórcio
-            </h3>
+            {/* Name Input for Consortium */}
+            <div className="flex items-center gap-2 mb-4">
+              <ArrowRightLeft className="w-4 h-4 text-slate-400" />
+              <input
+                type="text"
+                value={consLabel}
+                onChange={(e) => setConsLabel(e.target.value)}
+                className="font-bold text-slate-600 border-none bg-transparent focus:ring-0 focus:border-b focus:border-indigo-500 p-0 w-full"
+              />
+            </div>
+
             <SliderInput label="Valor do Veículo (Carta)" value={consVehicleValue} min={20000} max={500000} step={1000} prefix="R$ " onChange={setConsVehicleValue} />
             <SliderInput label="Entrada Inicial (Não Lance)" value={consDownPayment} min={0} max={consVehicleValue * 0.5} step={1000} prefix="R$ " onChange={setConsDownPayment} />
             <SliderInput label="Prazo (Meses)" value={consTermMonths} min={12} max={120} step={12} onChange={setConsTermMonths} />
@@ -434,18 +481,28 @@ function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 p-4 md:p-8 overflow-hidden flex flex-col">
+      <main className="flex-1 p-4 md:p-8 overflow-hidden flex flex-col" ref={dashboardRef}>
+
+        {/* Header with Export */}
+        <div className="flex justify-end mb-6">
+          <button
+            onClick={handleExportPDF}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors shadow-sm"
+          >
+            <Download className="w-4 h-4" /> Exportar PDF
+          </button>
+        </div>
 
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <Card
-            title="Total Pago - Financiamento PRICE"
+            title={`Total Pago - ${finLabel}`}
             value={formatCurrency(financingTotal)}
             subtext={`${finTermMonths} parcelas fixas`}
             icon={TrendingUp}
           />
           <Card
-            title="Total Pago - Consórcio"
+            title={`Total Pago - ${consLabel}`}
             value={formatCurrency(consortiumTotal)}
             subtext="Com reajustes anuais (IPCA)"
             icon={Calendar}
@@ -487,7 +544,7 @@ function App() {
                 <Line
                   type="monotone"
                   dataKey="financing"
-                  name="Financiamento PRICE"
+                  name={finLabel}
                   stroke="#EF4444"
                   strokeWidth={3}
                   dot={false}
@@ -496,7 +553,7 @@ function App() {
                 <Line
                   type="monotone"
                   dataKey="consortium"
-                  name="Consórcio"
+                  name={consLabel}
                   stroke="#10B981"
                   strokeWidth={3}
                   dot={false}
