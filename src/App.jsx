@@ -182,6 +182,11 @@ function App() {
 
     for (let m = 1; m <= maxTerm; m++) {
       // --- Financing Step ---
+      let currentFinInterest = 0;
+      let currentFinAmortization = 0;
+      let currentFinRegularPMT = 0;
+      let currentFinExtra = 0;
+
       let finPaymentThisMonth = 0;
 
       // Only pay if not already paid off
@@ -206,7 +211,8 @@ function App() {
         let extraPayment = extraEvent ? extraEvent.value : 0;
 
         // Total Payment for User = (Interest + RealPrincipal) + MonthlyFee + Extra
-        finPaymentThisMonth = (interest + realPrincipalPayment) + monthlyFinFee + extraPayment;
+        const regularPMT = (interest + realPrincipalPayment) + monthlyFinFee;
+        finPaymentThisMonth = regularPMT + extraPayment;
 
         // Reduce Balance
         finBalance -= (realPrincipalPayment + extraPayment);
@@ -218,11 +224,19 @@ function App() {
 
         finAccumulatedPaid += finPaymentThisMonth;
 
+        // Store details for Table
+        currentFinInterest = interest;
+        currentFinAmortization = realPrincipalPayment;
+        currentFinRegularPMT = regularPMT;
+        currentFinExtra = extraPayment;
+
         // NO RECALCULATION of fixedFinPMT. Term reduces naturally.
       }
 
       // --- Consortium Step ---
       let consPaymentThisMonth = 0;
+      let currentConsRegularPMT = 0;
+      let currentConsBid = 0;
 
       if (!consPaidOff && consPrincipalBalance > 0.01) {
         // 1. Inflation Adjustment (Annual)
@@ -253,6 +267,8 @@ function App() {
         let bidValue = bidEvent ? bidEvent.value : 0;
 
         consPaymentThisMonth = payment + bidValue;
+        currentConsRegularPMT = payment;
+        currentConsBid = bidValue;
 
         // 4. Update Balance (Only Principal Part and Bid reduce Principal Balance)
         let principalReduction = currentConsPrincipalPMT + bidValue;
@@ -262,6 +278,11 @@ function App() {
           principalReduction = consPrincipalBalance;
           consPaymentThisMonth = principalReduction + consMonthlyFixedFee;
           consPaidOff = true;
+          currentConsRegularPMT = consPaymentThisMonth; // Adjust regular PMT if it was the last partial one
+          if (currentConsBid > 0) {
+            // If the bid covered it, then regular PMT might be small or 0, simplified logic here:
+            // We assume user pays fees + remaining principal.
+          }
         }
 
         consPrincipalBalance -= principalReduction;
@@ -292,7 +313,15 @@ function App() {
         financing: finAccumulatedPaid,
         consortium: consAccumulatedPaid,
         financingMonthlyPaid: finPaymentThisMonth,
-        consortiumMonthlyPaid: consPaymentThisMonth
+        consortiumMonthlyPaid: consPaymentThisMonth,
+        // Detailed Fin Props
+        finInterest: currentFinInterest,
+        finAmortization: currentFinAmortization,
+        finRegularPMT: currentFinRegularPMT,
+        finExtra: currentFinExtra,
+        // Detailed Cons Props
+        consRegularPMT: currentConsRegularPMT,
+        consBid: currentConsBid
       });
     }
 
@@ -352,16 +381,30 @@ function App() {
 
     try {
       // Use html-to-image instead of html2canvas
-      const dataUrl = await toPng(dashboardRef.current, { cacheBust: true, backgroundColor: '#f8fafc' });
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const dataUrl = await toPng(dashboardRef.current, {
+        cacheBust: true,
+        backgroundColor: '#f8fafc',
+        height: dashboardRef.current.scrollHeight,
+        style: {
+          height: 'auto',
+          overflow: 'visible'
+        }
+      });
 
       // Load image to get dimensions
       const img = new Image();
       img.src = dataUrl;
       await new Promise(resolve => img.onload = resolve);
 
+      // Calculate PDF dimensions based on A4 width (210mm) and image aspect ratio
+      const pdfWidth = 210; // A4 width in mm
       const pdfHeight = (img.height * pdfWidth) / img.width;
+
+      const pdf = new jsPDF({
+        orientation: 'p',
+        unit: 'mm',
+        format: [pdfWidth, pdfHeight] // Custom format to fit content exactly
+      });
 
       pdf.addImage(dataUrl, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save('simulacao-financeira.pdf');
@@ -401,10 +444,10 @@ function App() {
 
             <SliderInput label="Valor do Veículo" value={finVehicleValue} min={20000} max={500000} step={1000} prefix="R$ " onChange={setFinVehicleValue} />
             <SliderInput label="Entrada" value={finDownPayment} min={0} max={finVehicleValue * 0.9} step={1000} prefix="R$ " onChange={setFinDownPayment} />
-            <SliderInput label="Prazo (Meses)" value={finTermMonths} min={12} max={120} step={12} onChange={setFinTermMonths} />
-            <SliderInput label="Taxa de Juros (% a.a.)" value={financingRate} min={0} max={40} step={0.1} suffix="%" onChange={setFinancingRate} />
+            <SliderInput label="Prazo (Meses)" value={finTermMonths} min={12} max={120} step={1} onChange={setFinTermMonths} />
+            <SliderInput label="Taxa de Juros (% a.a.)" value={financingRate} min={0} max={40} step={0.01} suffix="%" onChange={setFinancingRate} />
             <SliderInput label="IOF (% Total)" value={finIOF} min={0} max={5} step={0.01} suffix="%" onChange={setFinIOF} />
-            <SliderInput label="Seguro Prestamista (% Total)" value={finInsurance} min={0} max={10} step={0.1} suffix="%" onChange={setFinInsurance} />
+            <SliderInput label="Seguro Prestamista (% Total)" value={finInsurance} min={0} max={10} step={0.01} suffix="%" onChange={setFinInsurance} />
 
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 mb-4">
               <div className="text-xs text-slate-500 mb-1">Parcela Inicial Estimada (c/ Taxas)</div>
@@ -438,10 +481,10 @@ function App() {
 
             <SliderInput label="Valor do Veículo (Carta)" value={consVehicleValue} min={20000} max={500000} step={1000} prefix="R$ " onChange={setConsVehicleValue} />
             <SliderInput label="Entrada Inicial (Não Lance)" value={consDownPayment} min={0} max={consVehicleValue * 0.5} step={1000} prefix="R$ " onChange={setConsDownPayment} />
-            <SliderInput label="Prazo (Meses)" value={consTermMonths} min={12} max={120} step={12} onChange={setConsTermMonths} />
-            <SliderInput label="Taxa Adm. Total (%)" value={consortiumAdminRate} min={0} max={30} step={0.5} suffix="%" onChange={setConsortiumAdminRate} />
-            <SliderInput label="Seguro (% Variável/Total)" value={consInsurance} min={0} max={10} step={0.1} suffix="%" onChange={setConsInsurance} />
-            <SliderInput label="Inflação (IPCA % a.a.)" value={inflationRate} min={0} max={15} step={0.1} suffix="%" onChange={setInflationRate} />
+            <SliderInput label="Prazo (Meses)" value={consTermMonths} min={12} max={120} step={1} onChange={setConsTermMonths} />
+            <SliderInput label="Taxa Adm. Total (%)" value={consortiumAdminRate} min={0} max={30} step={0.01} suffix="%" onChange={setConsortiumAdminRate} />
+            <SliderInput label="Seguro (% Variável/Total)" value={consInsurance} min={0} max={10} step={0.01} suffix="%" onChange={setConsInsurance} />
+            <SliderInput label="Inflação (IPCA % a.a.)" value={inflationRate} min={0} max={15} step={0.01} suffix="%" onChange={setInflationRate} />
 
             <div className="mb-6">
               <label className="text-sm font-medium text-slate-700 mb-2 block">Estratégia de Lance (Contemplação)</label>
@@ -481,7 +524,7 @@ function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 p-4 md:p-8 overflow-hidden flex flex-col" ref={dashboardRef}>
+      <main className="flex-1 p-4 md:p-8 overflow-y-auto flex flex-col" ref={dashboardRef}>
 
         {/* Header with Export */}
         <div className="flex justify-end mb-6">
@@ -517,7 +560,7 @@ function App() {
         </div>
 
         {/* Chart */}
-        <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col">
+        <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col min-h-[500px]">
           <h2 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-indigo-600" />
             Evolução do Pagamento Acumulado
@@ -565,6 +608,82 @@ function App() {
           <div className="mt-4 flex items-center gap-2 text-sm text-slate-500 bg-slate-50 p-3 rounded-lg">
             <AlertCircle className="w-4 h-4 text-slate-400" />
             <p>Os valores do consórcio sofrem reajuste anual baseado na inflação configurada. O financiamento assume parcelas fixas (Tabela Price).</p>
+          </div>
+        </div>
+
+        {/* Parameters Summary (Included in PDF) */}
+        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-8 border-t border-slate-200 pt-8">
+          <div>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4 border-b border-slate-100 pb-2">
+              {finLabel} - Configuração
+            </h3>
+            <ul className="space-y-2 text-sm text-slate-600">
+              <li className="flex justify-between"><span>Valor do Veículo:</span> <strong>{formatCurrency(finVehicleValue)}</strong></li>
+              <li className="flex justify-between"><span>Entrada:</span> <strong>{formatCurrency(finDownPayment)}</strong></li>
+              <li className="flex justify-between"><span>Prazo:</span> <strong>{finTermMonths} meses</strong></li>
+              <li className="flex justify-between"><span>Taxa de Juros:</span> <strong>{financingRate}% a.a.</strong></li>
+              <li className="flex justify-between"><span>IOF:</span> <strong>{finIOF}%</strong></li>
+              <li className="flex justify-between"><span>Seguro Prestamista:</span> <strong>{finInsurance}%</strong></li>
+              <li className="flex justify-between"><span>Total Amortizações Extras:</span> <strong>{formatCurrency(finEvents.reduce((acc, e) => acc + e.value, 0))}</strong></li>
+            </ul>
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4 border-b border-slate-100 pb-2">
+              {consLabel} - Configuração
+            </h3>
+            <ul className="space-y-2 text-sm text-slate-600">
+              <li className="flex justify-between"><span>Valor da Carta:</span> <strong>{formatCurrency(consVehicleValue)}</strong></li>
+              <li className="flex justify-between"><span>Entrada Inicial:</span> <strong>{formatCurrency(consDownPayment)}</strong></li>
+              <li className="flex justify-between"><span>Prazo:</span> <strong>{consTermMonths} meses</strong></li>
+              <li className="flex justify-between"><span>Taxa Adm. Total:</span> <strong>{consortiumAdminRate}%</strong></li>
+              <li className="flex justify-between"><span>Seguro (Carta):</span> <strong>{consInsurance}%</strong></li>
+              <li className="flex justify-between"><span>Inflação Estimada (IPCA):</span> <strong>{inflationRate}% a.a.</strong></li>
+              <li className="flex justify-between"><span>Estratégia de Lance:</span> <strong>{bidStrategy === 'reduce_term' ? 'Reduzir Prazo' : 'Reduzir Parcela'}</strong></li>
+              <li className="flex justify-between"><span>Total Lances:</span> <strong>{formatCurrency(consEvents.reduce((acc, e) => acc + e.value, 0))}</strong></li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Amortization Table */}
+        <div className="mt-8 border-t border-slate-200 pt-8">
+          <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">Tabela de Amortização (Mensal)</h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm text-left text-slate-600">
+              <thead className="bg-slate-100 text-xs uppercase font-semibold text-slate-500">
+                <tr>
+                  <th className="px-4 py-2 text-center" rowSpan="2">Mês</th>
+                  <th className="px-4 py-2 text-center border-l border-slate-200" colSpan="4">{finLabel}</th>
+                  <th className="px-4 py-2 text-center border-l border-slate-200" colSpan="2">{consLabel}</th>
+                </tr>
+                <tr>
+                  {/* Financing Sub-headers */}
+                  <th className="px-4 py-2 border-l border-slate-200 text-xs text-slate-400">Parcela Total</th>
+                  <th className="px-4 py-2 text-xs text-slate-400">Juros</th>
+                  <th className="px-4 py-2 text-xs text-slate-400">Amortização</th>
+                  <th className="px-4 py-2 text-xs text-slate-400 text-green-600">Extra</th>
+                  {/* Consortium Sub-headers */}
+                  <th className="px-4 py-2 border-l border-slate-200 text-xs text-slate-400">Parcela Total</th>
+                  <th className="px-4 py-2 text-xs text-slate-400 text-green-600">Lance</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {data.slice(1).map((row) => (
+                  <tr key={row.month} className="hover:bg-slate-50">
+                    <td className="px-4 py-2 font-medium text-center">{row.month}</td>
+
+                    {/* Fin Columns */}
+                    <td className="px-4 py-2 border-l border-slate-200 font-semibold">{formatCurrency(row.finRegularPMT)}</td>
+                    <td className="px-4 py-2 text-red-400">{formatCurrency(row.finInterest)}</td>
+                    <td className="px-4 py-2 text-blue-400">{formatCurrency(row.finAmortization)}</td>
+                    <td className="px-4 py-2 text-green-600 font-bold">{row.finExtra > 0 ? formatCurrency(row.finExtra) : '-'}</td>
+
+                    {/* Cons Columns */}
+                    <td className="px-4 py-2 border-l border-slate-200 font-semibold">{formatCurrency(row.consRegularPMT)}</td>
+                    <td className="px-4 py-2 text-green-600 font-bold">{row.consBid > 0 ? formatCurrency(row.consBid) : '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </main>
