@@ -96,20 +96,20 @@ function App() {
   const [consTermMonths, setConsTermMonths] = useState(80);
   const [consDownPayment, setConsDownPayment] = useState(0); // Usually starts with 0 or small entry fee, bid comes later
   const [consortiumAdminRate, setConsortiumAdminRate] = useState(9); // Total %
+  const [consInsurance, setConsInsurance] = useState(0); // % of Letter
   const [inflationRate, setInflationRate] = useState(4.5); // % a.a.
   const [consEvents, setConsEvents] = useState([]); // Array of { month, value } (Lances)
+  const [bidStrategy, setBidStrategy] = useState('reduce_term'); // 'reduce_term' | 'reduce_installment'
 
   // --- Simulation Logic ---
   const simulationData = useMemo(() => {
-    // --- FINANCING SIMULATION (Iterative) ---
-    // Rules:
-    // 1. Calculate Monthly Interest from Annual Input: (1+i_aa)^(1/12) - 1
-    // 2. Initial Loan = Value - DownPayment
-    // 3. IOF and Insurance are calculated on the Loan Amount.
-    // 4. Per user request: These fees DO NOT accrue interest. They are spread linearly over the term.
-    //    MonthlyFee = (Loan * (IOF% + Insurance%)) / Term.
-    // 5. PMT (Principal + Interest) is calculated on Loan Amount separately.
-    // 6. Total Monthly Payment = PMT + MonthlyFee.
+    // --- FINANCING SIMULATION (Term Reduction / Amortização por Prazo) ---
+    // Refined Rules:
+    // 1. Installment (PMT) is FIXED based on initial calculation (Price Table).
+    // 2. Fees (IOF/Insurance) are also fixed monthly additions.
+    // 3. Extra Payments reduce the Principal Balance immediately.
+    // 4. CRITICAL: We do NOT recalculate PMT. We keep paying the SAME amount.
+    //    Result: Balance drops faster -> Debt paid off in fewer months.
 
     // Convert Annual Rate to Monthly Factor
     const monthlyRateFactor = Math.pow(1 + financingRate / 100, 1 / 12);
@@ -118,40 +118,46 @@ function App() {
     const loanPrincipal = finVehicleValue - finDownPayment;
     let finBalance = loanPrincipal;
     let finAccumulatedPaid = finDownPayment;
-    let currentFinPMT = 0;
 
-    // Fee Calculation
-    const totalFees = loanPrincipal * ((finIOF + finInsurance) / 100);
-    const monthlyFee = totalFees / finTermMonths;
+    // Fee Calculation (Fixed Monthly)
+    const totalFinFees = loanPrincipal * ((finIOF + finInsurance) / 100);
+    const monthlyFinFee = totalFinFees / finTermMonths;
 
-    // Initial PMT Calculation (Pure P+I)
+    // Base PMT Calculation (Pure P+I, Fixed throughout the contract)
+    let fixedFinPMT = 0;
     if (finBalance > 0) {
-      currentFinPMT = (finBalance * monthlyInterestRate) / (1 - Math.pow(1 + monthlyInterestRate, -finTermMonths));
+      fixedFinPMT = (finBalance * monthlyInterestRate) / (1 - Math.pow(1 + monthlyInterestRate, -finTermMonths));
     }
 
-    // --- CONSORTIUM SIMULATION (Iterative) ---
-    // Rules:
-    // 1. Total Debt = Credit + AdminFee.
-    // 2. Installment = Debt / Term.
-    // 3. Bid (Lance) reduces Debt.
-    // 4. Inflation adjusts Credit & Remaining Debt annually.
+    // --- CONSORTIUM SIMULATION (Fixed Fees + Principal Inflation + Bid Strategy) ---
+    // Refined Rules:
+    // 1. Fees (Admin + Insurance) are calculated on INITIAL Credit and are FIXED. (Divided by Term).
+    // 2. Inflation only adjusts the "Fundo Comum" (Principal Balance).
+    // 3. Bids (Lances) reduce the Principal Balance.
+    // 4. Bid Strategy:
+    //    - 'reduce_term': Keep currentConsPrincipalPMT fixed (inflation updates it only). Shorter term.
+    //    - 'reduce_installment': Recalculate currentConsPrincipalPMT = Balance / RemainingMonths. Same term, lower PMT.
 
-    // To be precise: Admin fee is on top of Credit.
-    // Common Logic: Total to Pay = Credit * (1 + Admin%).
-    // Monthly Installment = Total / Term.
-    // If you bid (Lance), you pay X amount. This reduces the Balance.
-    // New Installment = Remaining Balance / Remaining Term.
-    // Inflation: At month 12, 24... the Letter (Credit) adjusts by IPCA. 
-    // Usually, the installment ALSO adjusts by same % to cover the group fund.
+    // Independent Fee Bucket
+    let consTotalFixedAdminFee = consVehicleValue * (consortiumAdminRate / 100);
+    let consTotalFixedInsurance = consVehicleValue * (consInsurance / 100);
+    let consMonthlyFixedFee = (consTotalFixedAdminFee + consTotalFixedInsurance) / consTermMonths;
 
-    let consCredit = consVehicleValue;
-    let consTotalDebt = consCredit * (1 + consortiumAdminRate / 100);
-    // Initial deduction logic: 
-    // Traditionally, 'Down Payment' in simulador is just 'Lance Embutido' or 'Entry'. 
-    // If it's entry, it reduces debt immediately.
-    let consBalance = consTotalDebt - consDownPayment;
+    // Principal Bucket (Fundo Comum) - Starts equal to Vehicle Value
+    let consPrincipalBalance = consVehicleValue;
+
+    // Initial Down Payment Handling for Consortium
+    // If "Entrada" is treated as an initial "Lance Embutido" or "Aport", it reduces Principal.
+    consPrincipalBalance -= consDownPayment;
+
+    // Current Principal Installment (Floating, affected by Inflation & Bids based on Strategy)
+    let currentConsPrincipalPMT = consPrincipalBalance / consTermMonths;
+    // We need to track 'Virtual Remaining Months' for 'reduce_term' strategy to know if we finished early?
+    // Actually simpler: we just pay until balance is 0. 
+    // BUT for 'reduce_term', we maintain the PMT value. 
+    // For 'reduce_installment', we recalculate PMT to fit the Original Term.
+
     let consAccumulatedPaid = consDownPayment;
-    let currentConsPMT = consBalance / consTermMonths;
 
     const maxTerm = Math.max(finTermMonths, consTermMonths);
     const finalData = [];
@@ -163,76 +169,76 @@ function App() {
       consortium: consDownPayment,
     });
 
+    let finPaidOff = false;
+    let consPaidOff = false;
+
     for (let m = 1; m <= maxTerm; m++) {
       // --- Financing Step ---
       let finPaymentThisMonth = 0;
-      if (m <= finTermMonths && finBalance > 0.01) {
-        // Interest accrued this month
-        const interest = finBalance * monthlyInterestRate;
-        // Regular PMT (cannot exceed balance + interest)
-        let paymentPrincipalInterest = currentFinPMT;
 
-        // Check for Extra Payment Event
+      // Only pay if not already paid off
+      if (!finPaidOff && finBalance > 0.01) {
+        // Interest accrued this month on current balance
+        const interest = finBalance * monthlyInterestRate;
+
+        // The base payment to attempt is the Fixed PMT
+        let paymentPrincipalComponent = fixedFinPMT - interest;
+
+        // NOTE: If balance is low, the Fixed PMT might exceed what is needed.
+        // In 'Term Reduction', if (Interest + Balance) < FixedPMT, we just pay off the rest.
+        let realPrincipalPayment = paymentPrincipalComponent;
+
+        if (finBalance < paymentPrincipalComponent) {
+          realPrincipalPayment = finBalance;
+          finPaidOff = true;
+        }
+
+        // Check for Extra Payment Event (Amortization)
         const extraEvent = finEvents.find(e => e.month === m);
         let extraPayment = extraEvent ? extraEvent.value : 0;
 
-        // Amortization Check
-        // Payment covers interest first, then principal
-        // If balance is tiny, just pay it off.
-        if (finBalance + interest < paymentPrincipalInterest) {
-          paymentPrincipalInterest = finBalance + interest;
-        }
+        // Total Payment for User = (Interest + RealPrincipal) + MonthlyFee + Extra
+        finPaymentThisMonth = (interest + realPrincipalPayment) + monthlyFinFee + extraPayment;
 
-        // Total Payment = (P+I) + Monthly Fee + Extra
-        finPaymentThisMonth = paymentPrincipalInterest + monthlyFee + extraPayment;
+        // Reduce Balance
+        finBalance -= (realPrincipalPayment + extraPayment);
 
-        // Update Balance (Only P+I and Extra affect balance, Fees do not reduce principal)
-        // New Balance = Old Balance + Interest - (PaymentP+I + Extra)
-        // Effectively: PrincipalReduc = (PaymentP+I - Interest) + Extra
-        const principalReduction = (paymentPrincipalInterest - interest) + extraPayment;
-        finBalance -= principalReduction;
-
-        if (finBalance < 0) {
-          // Refund overpayment (logic cleanliness) - mostly from huge extra payment
-          // If balance < 0, it means we paid too much principal.
-          // Adjust paymentAmount to match exactly 0.
-          const refund = Math.abs(finBalance);
-          finPaymentThisMonth -= refund;
+        if (finBalance <= 0.01) {
           finBalance = 0;
+          finPaidOff = true;
         }
 
         finAccumulatedPaid += finPaymentThisMonth;
 
-        // Recalculate PMT if there was an Extra Payment and balance remains
-        if (extraPayment > 0 && finBalance > 0) {
-          const remainingMonths = finTermMonths - m;
-          if (remainingMonths > 0) {
-            currentFinPMT = (finBalance * monthlyInterestRate) / (1 - Math.pow(1 + monthlyInterestRate, -remainingMonths));
-          } else {
-            // Should be paid off
-            finBalance = 0;
-          }
-        }
+        // NO RECALCULATION of fixedFinPMT. Term reduces naturally.
       }
 
       // --- Consortium Step ---
       let consPaymentThisMonth = 0;
-      if (m <= consTermMonths && consBalance > 0.01) {
+
+      if (!consPaidOff && consPrincipalBalance > 0.01) {
         // 1. Inflation Adjustment (Annual)
-        // Adjustment usually happens on month 13, 25, etc. (After 12 months)
+        // Adjusts Principal Balance AND Credit Value (Visual)
+        // Fees are FIXED, so they don't change.
         if (m > 1 && (m - 1) % 12 === 0) {
           const adjustmentFactor = 1 + inflationRate / 100;
-          // Adjust Balance 
-          consBalance *= adjustmentFactor;
-          // Adjust Credit Value (Reference only, visual)
-          consCredit *= adjustmentFactor;
-          // Recalculate PMT based on new balance
-          const remainingMonths = consTermMonths - (m - 1);
-          if (remainingMonths > 0) currentConsPMT = consBalance / remainingMonths;
+          consPrincipalBalance *= adjustmentFactor;
+
+          // Update PMT due to Inflation
+          if (bidStrategy === 'reduce_installment') {
+            // Fully recalculate for remaining term
+            const remainingMonths = consTermMonths - (m - 1);
+            if (remainingMonths > 0) {
+              currentConsPrincipalPMT = consPrincipalBalance / remainingMonths;
+            }
+          } else {
+            // 'reduce_term': Just adjust the Fixed Principal PMT by inflation
+            currentConsPrincipalPMT *= adjustmentFactor;
+          }
         }
 
-        // 2. Regular Payment
-        let payment = currentConsPMT;
+        // 2. Regular Payment = Principal Part + Fixed Fees
+        let payment = currentConsPrincipalPMT + consMonthlyFixedFee;
 
         // 3. Check for Bid Event (Lance)
         const bidEvent = consEvents.find(e => e.month === m);
@@ -240,23 +246,35 @@ function App() {
 
         consPaymentThisMonth = payment + bidValue;
 
-        // 4. Update Balance
-        consBalance -= consPaymentThisMonth;
+        // 4. Update Balance (Only Principal Part and Bid reduce Principal Balance)
+        let principalReduction = currentConsPrincipalPMT + bidValue;
 
-        if (consBalance < 0) {
-          consPaymentThisMonth += consBalance;
-          consBalance = 0;
+        // Cap to balance
+        if (principalReduction > consPrincipalBalance) {
+          principalReduction = consPrincipalBalance;
+          consPaymentThisMonth = principalReduction + consMonthlyFixedFee;
+          consPaidOff = true;
+        }
+
+        consPrincipalBalance -= principalReduction;
+
+        if (consPrincipalBalance <= 0.01) {
+          consPrincipalBalance = 0;
+          consPaidOff = true;
         }
 
         consAccumulatedPaid += consPaymentThisMonth;
 
-        // Recalculate PMT if Bid occurred
-        if (bidValue > 0 && consBalance > 0) {
+        // 5. Post-Bid Strategy Execution
+        if (bidValue > 0 && !consPaidOff) {
           const remainingMonths = consTermMonths - m;
           if (remainingMonths > 0) {
-            currentConsPMT = consBalance / remainingMonths;
-          } else {
-            consBalance = 0;
+            if (bidStrategy === 'reduce_installment') {
+              // Recalculate PMT to spread new balance over ALL remaining months
+              currentConsPrincipalPMT = consPrincipalBalance / remainingMonths;
+            }
+            // if 'reduce_term', we CHANGE NOTHING about currentConsPrincipalPMT.
+            // We just keep paying the same amount, which will kill the balance faster.
           }
         }
       }
@@ -270,27 +288,29 @@ function App() {
       });
     }
 
-    // Initial Display calculation needs to include the Fee
-    const initialFinPMTOnly = loanPrincipal > 0 ? (loanPrincipal * monthlyInterestRate) / (1 - Math.pow(1 + monthlyInterestRate, -finTermMonths)) : 0;
-    const initialFinTotalMonthly = initialFinPMTOnly + monthlyFee;
+    // Initial Display
+    const initialFinTotalMonthly = fixedFinPMT + monthlyFinFee;
+    // Initial Cons PMT = (Principal / Term) + Fixed Fees
+    const initialConsPrincipalPMT = (consVehicleValue - consDownPayment) / consTermMonths;
+    const initialConsTotalMonthly = initialConsPrincipalPMT + consMonthlyFixedFee;
 
     return {
       data: finalData,
       financingTotal: finAccumulatedPaid,
       consortiumTotal: consAccumulatedPaid,
-      // For Initial Display
       financingInitialPMT: initialFinTotalMonthly,
-      consortiumInitialPMT: (consVehicleValue * (1 + consortiumAdminRate / 100) - consDownPayment) / consTermMonths
+      consortiumInitialPMT: initialConsTotalMonthly
     };
 
   }, [
     finVehicleValue, finTermMonths, finDownPayment, financingRate, finIOF, finInsurance, finEvents,
-    consVehicleValue, consTermMonths, consDownPayment, consortiumAdminRate, inflationRate, consEvents
+    consVehicleValue, consTermMonths, consDownPayment, consortiumAdminRate, consInsurance, inflationRate, consEvents, bidStrategy
   ]);
 
   const { data, financingTotal, consortiumTotal, financingInitialPMT, consortiumInitialPMT } = simulationData;
   const difference = financingTotal - consortiumTotal;
-  const betterOption = difference > 0 ? "Consórcio" : "Financiamento";
+  const betterOption = difference > 0 ? "Consórcio" : "Financiamento PRICE";
+
   const savings = Math.abs(difference);
 
   const formatCurrency = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
@@ -338,7 +358,7 @@ function App() {
         <div className="space-y-8">
           <section>
             <h3 className="flex items-center gap-2 text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">
-              <DollarSign className="w-4 h-4" /> Financiamento
+              <DollarSign className="w-4 h-4" /> Financiamento PRICE
             </h3>
             <SliderInput label="Valor do Veículo" value={finVehicleValue} min={20000} max={500000} step={1000} prefix="R$ " onChange={setFinVehicleValue} />
             <SliderInput label="Entrada" value={finDownPayment} min={0} max={finVehicleValue * 0.9} step={1000} prefix="R$ " onChange={setFinDownPayment} />
@@ -350,6 +370,10 @@ function App() {
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 mb-4">
               <div className="text-xs text-slate-500 mb-1">Parcela Inicial Estimada (c/ Taxas)</div>
               <div className="text-lg font-semibold text-slate-700">{formatCurrency(financingInitialPMT)}</div>
+            </div>
+
+            <div className="bg-blue-50 p-2 rounded text-xs text-blue-700 mb-4">
+              <strong>Nota:</strong> Amortizações extras reduzem o saldo devedor e o prazo (antecipação de parcelas), mantendo o valor da parcela fixo.
             </div>
 
             <EventList
@@ -369,7 +393,29 @@ function App() {
             <SliderInput label="Entrada Inicial (Não Lance)" value={consDownPayment} min={0} max={consVehicleValue * 0.5} step={1000} prefix="R$ " onChange={setConsDownPayment} />
             <SliderInput label="Prazo (Meses)" value={consTermMonths} min={12} max={120} step={12} onChange={setConsTermMonths} />
             <SliderInput label="Taxa Adm. Total (%)" value={consortiumAdminRate} min={0} max={30} step={0.5} suffix="%" onChange={setConsortiumAdminRate} />
+            <SliderInput label="Seguro (% Variável/Total)" value={consInsurance} min={0} max={10} step={0.1} suffix="%" onChange={setConsInsurance} />
             <SliderInput label="Inflação (IPCA % a.a.)" value={inflationRate} min={0} max={15} step={0.1} suffix="%" onChange={setInflationRate} />
+
+            <div className="mb-6">
+              <label className="text-sm font-medium text-slate-700 mb-2 block">Estratégia de Lance (Contemplação)</label>
+              <div className="flex bg-slate-100 p-1 rounded-lg">
+                <button
+                  className={`flex-1 py-1 px-3 text-xs font-semibold rounded-md transition-colors ${bidStrategy === 'reduce_term' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  onClick={() => setBidStrategy('reduce_term')}
+                >
+                  Reduzir Prazo
+                </button>
+                <button
+                  className={`flex-1 py-1 px-3 text-xs font-semibold rounded-md transition-colors ${bidStrategy === 'reduce_installment' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  onClick={() => setBidStrategy('reduce_installment')}
+                >
+                  Reduzir Parcela
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                {bidStrategy === 'reduce_term' ? 'Mantém o valor da parcela (fundo comum) e quita saldo mais rápido.' : 'Mantém o prazo original e diminui o valor da parcela mensal.'}
+              </p>
+            </div>
 
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 mb-4">
               <div className="text-xs text-slate-500 mb-1">1ª Parcela Estimada</div>
@@ -393,7 +439,7 @@ function App() {
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <Card
-            title="Total Pago - Financiamento"
+            title="Total Pago - Financiamento PRICE"
             value={formatCurrency(financingTotal)}
             subtext={`${finTermMonths} parcelas fixas`}
             icon={TrendingUp}
@@ -441,7 +487,7 @@ function App() {
                 <Line
                   type="monotone"
                   dataKey="financing"
-                  name="Financiamento"
+                  name="Financiamento PRICE"
                   stroke="#EF4444"
                   strokeWidth={3}
                   dot={false}
