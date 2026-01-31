@@ -1,132 +1,88 @@
 # Simulador Financeiro: Financiamento vs. Consórcio
 
-Este projeto é uma aplicação web interativa desenvolvida em React para simular e comparar cenários de **Financiamento** e **Consórcio**, focada no mercado brasileiro.
+> Ferramenta interativa para comparação avançada de crédito, incluindo imóveis na planta, financiamentos (SAC/Price) e consórcios.
 
-A ferramenta permite aos usuários configurar detalhadamente cada modalidade, visualizar a evolução dos pagamentos em gráficos, analisar tabelas de amortização mês a mês e exportar um relatório completo em PDF.
+![Status do Build](https://img.shields.io/badge/build-passing-brightgreen)
+![Versão React](https://img.shields.io/badge/react-v19-blue)
+![Licença](https://img.shields.io/badge/license-MIT-green)
+
+## Visão Geral
+
+Este projeto é uma aplicação web desenvolvida para simular e comparar detalhadamente cenários de aquisição de bens (Imóveis e Veículos) via **Financiamento Bancário** ou **Consórcio**.
+
+Diferente de simuladores simples, esta ferramenta permite modelar cenários complexos do mercado brasileiro, como **compra de imóveis na planta** (com fluxo de obra e juros de obra), amortizações extraordinárias, lances em consórcio e diferentes sistemas de amortização (SAC vs. Price).
 
 ## 🚀 Funcionalidades Principais
 
-### 🏦 Financiamento (Tabela Price)
+### 🏠 Novidade: Simulador de Imóvel na Planta (Off-Plan)
+- **Fluxo de Obras**: Modele pagamentos mensais, anuais (balões) e chaves diretamente à construtora.
+- **Juros de Obra**: Simulação automática da correção do saldo devedor (INCC) e pagamentos de juros sobre o valor desembolsado pelo banco durante a obra.
+- **Gráfico de Fluxo de Caixa**: Visualização em área empilhada (Stacked Area) mostrando exatamente quanto sai do bolso mês a mês (Construtora + Juros de Obra + Financiamento).
 
-- **Cálculo de Parcelas Fixas**: Baseado na Tabela Price.
-- **Taxas e Seguros**: Inclusão de IOF (0.38%) e Seguro Prestamista nas parcelas.
-- **Amortização Extra**: Simulação de pagamentos extras pontuais que reduzem o saldo devedor e o prazo (mantendo o valor da parcela).
+### 🏦 Financiamento
+- **Sistemas de Amortização**: Suporte completo a **Tabela SAC** (Parcelas decrescentes) e **Tabela Price** (Parcelas fixas).
+- **Custos Reais**: Inclusão de IOF, Seguro Prestamista e Taxas Administrativas no Custo Efetivo Total.
+- **Amortização Extra**: Simule o impacto de abater o saldo devedor (reduzindo prazo ou valor da parcela) com "dinheiro extra".
 
 ### 🤝 Consórcio
-
-- **Reajuste Anual**: Correção do saldo devedor e parcelas baseado na inflação (IPCA) configurada.
-- **Taxas Administrativas**: Taxa de administração e seguro de vida/quebra de garantia.
-- **Estratégias de Lance**:
-  - **Reduzir Prazo**: O lance abate o saldo devedor, mantendo o valor da parcela (fundo comum) e reduzindo o número de meses restantes.
-  - **Reduzir Parcela**: O lance abate o saldo devedor e recalcula (reduz) o valor das parcelas futuras para o restante do prazo original.
+- **Lances Estratégicos**: Simule lances livres ou embutidos.
+- **Estratégias de Contemplação**: Escolha entre reduzir o prazo ou reduzir a parcela após a contemplação.
+- **Inflação Anual**: Projeção de reajuste das parcelas e do crédito pelo IPCA/INCC.
 
 ### 📊 Análise e Relatórios
+- **Comparativo Visual**: Gráfico de evolução do "Patrimônio Pago" vs. "Dívida Restante".
+- **Tabelas Detalhadas**: Cronograma mês a mês de todos os pagamentos.
+- **Exportação PDF**: Gere relatórios profissionais para clientes ou uso pessoal.
 
-- **Comparativo Visual**: Gráfico de linha interativo mostrando o "Total Pago Acumulado" ao longo do tempo.
-- **Tabelas Detalhadas**: Visualização mês a mês de juros, amortização, lances e pagamentos extras.
-- **Exportação PDF**: Geração de relatório completo com um clique.
-- **Nomes Personalizáveis**: Identifique os cenários (ex: "Banco X" vs "Consórcio Y").
-
-## 📂 Estrutura do Projeto
-
-O projeto utiliza **Vite** como build tool e **React** como biblioteca principal, com estilos em **Tailwind CSS**.
-
-```bash
-fin-simulations/
-├── public/              # Arquivos estáticos
-├── src/
-│   ├── assets/          # Imagens e ícones
-│   ├── App.jsx          # Componente Principal (Lógica e UI)
-│   ├── main.jsx         # Ponto de entrada React
-│   └── index.css        # Configuração do Tailwind CSS
-├── index.html           # HTML base
-├── package.json         # Dependências e scripts
-├── tailwind.config.js   # Configuração do Tailwind
-├── postcss.config.js    # Configuração do PostCSS
-└── vite.config.js       # Configuração do Vite
-```
-
-> **Nota**: A aplicação foi desenhada como uma solução *Single-File Component* (`App.jsx`) para facilitar o entendimento do fluxo de simulação e a portabilidade.
-
-## 🛠️ Como Executar
+## 🛠️ Instalação e Execução
 
 ### Pré-requisitos
+- Node.js (v18+)
+- npm ou yarn
 
-- Node.js (v18+ recomendado)
-- npm (v9+)
+### Passo a Passo
 
-### Instalação
-
-1. Clone o repositório:
-
+1. **Clone o repositório**
    ```bash
-   git clone https://github.com/seu-usuario/fin-simulations.git
-   cd fin-simulations
+   git clone https://github.com/ArthurKretzer/auto-loan-consortium-compare.git
+   cd auto-loan-consortium-compare
    ```
 
-2. Instale as dependências:
-
+2. **Instale as dependências**
    ```bash
    npm install
    ```
 
-### Desenvolvimento
+3. **Execute localmente**
+   ```bash
+   npm run dev
+   ```
+   Acesse `http://localhost:5173`.
 
-Para rodar o servidor de desenvolvimento local:
+## 📂 Estrutura do Projeto
 
-```bash
-npm run dev
+O projeto utiliza **Vite** + **React** com uma arquitetura focada em simulação local (Client-Side).
+
+```text
+src/
+├── App.jsx             # Lógica central e Interface (Single-File Component pattern)
+├── main.jsx            # Entry point
+└── index.css           # Estilos globais (Tailwind CSS)
 ```
 
-Acesse `http://localhost:5173`.
+## 🤝 Contribuição
 
-### Build de Produção
+Contribuições são bem-vindas! Sinta-se à vontade para abrir Issues ou enviar Pull Requests.
 
-Para gerar a versão otimizada para produção:
-
-```bash
-npm run build
-```
-
-Os arquivos serão gerados na pasta `dist/`.
-
-## 🤝 Como Contribuir
-
-Contribuições são bem-vindas! Se você deseja melhorar a lógica de cálculo, adicionar novos gráficos ou corrigir bugs:
-
-1. Faça um **Fork** do projeto.
-2. Crie uma **Branch** para sua feature (`git checkout -b feature/nova-logica`).
-3. Faça o **Commit** das suas alterações (`git commit -m 'Adiciona cálculo SAC'`).
-4. Faça o **Push** para a Branch (`git push origin feature/nova-logica`).
-5. Abra um **Pull Request**.
-
-## 🚀 Como Publicar no GitHub Pages
-
-Este projeto já está configurado para deploy automático no GitHub Pages.
-
-1. **Inicialize o Git (se ainda não fez)**:
-
-   ```bash
-   git init
-   git remote add origin https://github.com/ArthurKretzer/auto-loan-consortium-compare.git
-   ```
-
-2. **Faça o Commit e Push**:
-
-   ```bash
-   git add .
-   git commit -m "Commit inicial"
-   git push -u origin main
-   ```
-
-3. **Faça o Deploy**:
-
-   ```bash
-   npm run deploy
-   ```
-
-O site estará disponível em: `https://ArthurKretzer.github.io/auto-loan-consortium-compare`
+1. Faça um Fork do projeto
+2. Crie uma Branch para sua Feature (`git checkout -b feature/MinhaFeature`)
+3. Faça o Commit (`git commit -m 'Adiciona funcionalidade X'`)
+4. Faça o Push (`git push origin feature/MinhaFeature`)
+5. Abra um Pull Request
 
 ## 📄 Licença
 
-Este projeto é de uso livre para fins educacionais e pessoais.
+Este projeto está sob a licença [MIT](LICENSE).
+
+---
+Desenvolvido com ❤️ para ajudar brasileiros a tomarem melhores decisões financeiras.
