@@ -2,7 +2,7 @@ import { toPng } from 'html-to-image';
 import jsPDF from 'jspdf';
 import { AlertCircle, ArrowRightLeft, Calculator, Calendar, ChevronDown, DollarSign, Download, Home, Menu, Percent, Plus, Trash2, TrendingUp, X } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, AreaChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 // ─── ASSET CONFIGS ─────────────────────────────────────────────────────────────
 
@@ -42,10 +42,82 @@ const ASSET_CONFIGS = {
       value: 'Valor do Imóvel',
       consValue: 'Valor do Imóvel (Carta)',
     },
+    // Off-Plan Defaults
+    defaultConstructionTerm: 36,
+    defaultBuilderMonthly: 1500,
+    defaultBuilderBalloons: 10000, // Annual
+    defaultBuilderHandover: 50000,
   },
 };
 
 // ─── PURE SIMULATION FUNCTIONS ─────────────────────────────────────────────────
+
+function simulateBuilderDirect({ termMonths, monthlyValue, balloonValue, handoverValue, inccRate }) {
+  const monthlyIncc = Math.pow(1 + inccRate / 100, 1 / 12) - 1;
+  const schedule = [];
+  let accumulated = 0;
+
+  for (let m = 1; m <= termMonths; m++) {
+    const correctionFactor = Math.pow(1 + monthlyIncc, m);
+
+    // 1. Monthly Payment (Corrigida)
+    const monthly = monthlyValue * correctionFactor;
+
+    // 2. Balloon (Annual - Month 12, 24, 36...)
+    let balloon = 0;
+    if (m % 12 === 0 && m !== termMonths) { // Don't pay balloon on last month if handover exists? Or both? Usually separate.
+      balloon = balloonValue * correctionFactor;
+    }
+
+    // 3. Handover (Last Month)
+    let handover = 0;
+    if (m === termMonths) {
+      handover = handoverValue * correctionFactor;
+    }
+
+    const total = monthly + balloon + handover;
+    accumulated += total;
+
+    schedule.push({
+      month: m,
+      builderMonthly: monthly,
+      builderBalloon: balloon,
+      builderHandover: handover,
+      total,
+      accumulated
+    });
+  }
+
+  return { schedule, totalPaid: accumulated };
+}
+
+function simulateConstructionInterest({ loanAmount, termMonths, annualRate }) {
+  // "Juros de Obra": Interest on the amount disbursed by the bank to the builder.
+  // We assume a linear dispersion (linear S-curve) from 0% to 100% over the construction term.
+
+  const monthlyRate = Math.pow(1 + annualRate / 100, 1 / 12) - 1;
+  const schedule = [];
+  let accumulated = 0;
+
+  for (let m = 1; m <= termMonths; m++) {
+    // Linear progression: Bank disburses 1/Nth of the loan every month
+    // Balance owed to bank increases, so interest paid increases.
+    const progress = m / termMonths;
+    const disbursedAmount = loanAmount * progress;
+
+    const interestPayment = disbursedAmount * monthlyRate;
+    accumulated += interestPayment;
+
+    schedule.push({
+      month: m,
+      disbursedAmount,
+      interestPayment, // This is the "Juros de Obra" payment
+      accumulated
+    });
+  }
+
+  return { schedule, totalPaid: accumulated };
+}
 
 function simulatePrice({ principal, termMonths, annualRate, monthlyFee, extraEvents, strategy }) {
   const monthlyRate = Math.pow(1 + annualRate / 100, 1 / 12) - 1;
@@ -344,6 +416,14 @@ function App() {
   const [finEvents, setFinEvents] = useState([]);
   const [finAmortStrategy, setFinAmortStrategy] = useState('reduce_term');
 
+  // Off-Plan State (Property only)
+  const [isOffPlan, setIsOffPlan] = useState(false);
+  const [constructionTerm, setConstructionTerm] = useState(config.defaultConstructionTerm || 36);
+  const [builderMonthly, setBuilderMonthly] = useState(config.defaultBuilderMonthly || 0);
+  const [builderBalloons, setBuilderBalloons] = useState(config.defaultBuilderBalloons || 0); // Annual balloons
+  const [builderHandover, setBuilderHandover] = useState(config.defaultBuilderHandover || 0); // Key handover
+  const [constructionRate, setConstructionRate] = useState(8.0); // INCC estimated annual rate
+
   // Consortium State
   const [consAssetValue, setConsAssetValue] = useState(config.defaultValue);
   const [consTermMonths, setConsTermMonths] = useState(config.defaultConsTerm);
@@ -369,47 +449,219 @@ function App() {
     setConsReserveFund(c.defaultReserveFund);
     setFinEvents([]);
     setConsEvents([]);
+    // Reset Off-Plan
+    setIsOffPlan(false);
+    if (newType === 'property') {
+      setConstructionTerm(c.defaultConstructionTerm);
+      setBuilderMonthly(c.defaultBuilderMonthly);
+      setBuilderBalloons(c.defaultBuilderBalloons);
+      setBuilderHandover(c.defaultBuilderHandover);
+    }
   };
 
   // ─── Simulation ────────────────────────────────────────────────────────────
 
   const simulationData = useMemo(() => {
-    const loanPrincipal = finAssetValue - finDownPayment;
-    const totalFinFees = loanPrincipal * ((finIOF + finInsurance) / 100);
-    const monthlyFinFee = finTermMonths > 0 ? totalFinFees / finTermMonths : 0;
-
-    const finResult = amortMethod === 'sac'
-      ? simulateSAC({ principal: loanPrincipal, termMonths: finTermMonths, annualRate: financingRate, monthlyFee: monthlyFinFee, extraEvents: finEvents, strategy: finAmortStrategy })
-      : simulatePrice({ principal: loanPrincipal, termMonths: finTermMonths, annualRate: financingRate, monthlyFee: monthlyFinFee, extraEvents: finEvents, strategy: finAmortStrategy });
-
+    // ─── CONSORTIUM (Unchanged) ───
     const consResult = simulateConsortium({
       assetValue: consAssetValue, downPayment: consDownPayment, termMonths: consTermMonths,
       adminRate: consortiumAdminRate, insuranceRate: consInsurance, reserveFundRate: consReserveFund,
       inflationRate, bidEvents: consEvents, bidStrategy,
     });
 
-    const maxLen = Math.max(finResult.schedule.length, consResult.schedule.length);
-    const finalData = [{ month: 0, financing: finDownPayment, consortium: consDownPayment }];
+    // ─── FINANCING (Standard vs Off-Plan) ───
+    let finResult;
+    let constructionData = null;
+    let constructionAccumulated = 0;
 
-    const finTotal = finDownPayment + (finResult.schedule.length > 0 ? finResult.schedule[finResult.schedule.length - 1].accumulated : 0);
+    // We need to determine the financing start month relative to 0
+    let finStartMonth = 0;
+
+    if (isOffPlan && assetType === 'property') {
+      finStartMonth = constructionTerm;
+
+      // 1. Builder Phase
+      // Estimate simple nominal for loan calc (Input Monthly * Term is an approx of nominal total without INCC to subtract from Value)
+      // Actually, let's use the explicit inputs as "Nominal" commitments.
+      // Nominal Total Paid to Builder = (Monthly * Term) + (Balloons * Count) + Handover
+      // We assume user adjusted inputs to match their "Entry" plan.
+      const balloonsCount = Math.floor(constructionTerm / 12); // Approx
+      // Note: balloonValue is annual.
+
+      // Calculate Loan Principal (Saldo Devedor a Financiar)
+      // ValImovel - (Sum of Nominal Builder Payments)
+      // Then Apply INCC to this balance until handover.
+
+      const nominalBuilderTotal = (builderMonthly * constructionTerm) + (builderBalloons * balloonsCount) + builderHandover;
+      let rawPrincipal = finAssetValue - nominalBuilderTotal;
+      if (rawPrincipal < 0) rawPrincipal = 0;
+
+      // Apply INCC to the Principal (Saldo Devedor)
+      const inccFactor = Math.pow(1 + constructionRate / 100, constructionTerm / 12);
+      const loanPrincipal = rawPrincipal * inccFactor;
+
+      // Simulate Builder Payments (with INCC on payments)
+      const builderSim = simulateBuilderDirect({
+        termMonths: constructionTerm,
+        monthlyValue: builderMonthly,
+        balloonValue: builderBalloons,
+        handoverValue: builderHandover,
+        inccRate: constructionRate
+      });
+
+      // Simulate Juros de Obra (on the growing Principal)
+      const constructionInterestSim = simulateConstructionInterest({
+        loanAmount: loanPrincipal,
+        termMonths: constructionTerm,
+        annualRate: financingRate
+      });
+
+      constructionData = { builder: builderSim.schedule, interest: constructionInterestSim.schedule };
+      constructionAccumulated = builderSim.totalPaid + constructionInterestSim.totalPaid;
+
+      // 2. Bank Phase
+      const totalFinFees = loanPrincipal * ((finIOF + finInsurance) / 100);
+      const monthlyFinFee = finTermMonths > 0 ? totalFinFees / finTermMonths : 0;
+
+      finResult = amortMethod === 'sac'
+        ? simulateSAC({ principal: loanPrincipal, termMonths: finTermMonths, annualRate: financingRate, monthlyFee: monthlyFinFee, extraEvents: finEvents, strategy: finAmortStrategy })
+        : simulatePrice({ principal: loanPrincipal, termMonths: finTermMonths, annualRate: financingRate, monthlyFee: monthlyFinFee, extraEvents: finEvents, strategy: finAmortStrategy });
+
+    } else {
+      // Standard
+      const loanPrincipal = finAssetValue - finDownPayment;
+      const totalFinFees = loanPrincipal * ((finIOF + finInsurance) / 100);
+      const monthlyFinFee = finTermMonths > 0 ? totalFinFees / finTermMonths : 0;
+
+      finResult = amortMethod === 'sac'
+        ? simulateSAC({ principal: loanPrincipal, termMonths: finTermMonths, annualRate: financingRate, monthlyFee: monthlyFinFee, extraEvents: finEvents, strategy: finAmortStrategy })
+        : simulatePrice({ principal: loanPrincipal, termMonths: finTermMonths, annualRate: financingRate, monthlyFee: monthlyFinFee, extraEvents: finEvents, strategy: finAmortStrategy });
+    }
+
+    // ─── MERGE DATA ───
+    const maxLen = Math.max(finStartMonth + finResult.schedule.length, consResult.schedule.length);
+    const finalData = [];
+
+    // Initial State (Month 0)
+    finalData.push({
+      month: 0,
+      financing: isOffPlan ? 0 : finDownPayment,
+      consortium: consDownPayment
+    });
+
+    const finTotal = (isOffPlan ? constructionAccumulated : finDownPayment) +
+      (finResult.schedule.length > 0 ? finResult.schedule[finResult.schedule.length - 1].accumulated : 0);
     const consTotal = consDownPayment + (consResult.schedule.length > 0 ? consResult.schedule[consResult.schedule.length - 1].accumulated : 0);
 
-    for (let i = 0; i < maxLen; i++) {
-      const fin = finResult.schedule[i];
-      const cons = consResult.schedule[i];
+    for (let i = 1; i <= maxLen; i++) {
+      let finAccumulated = 0;
+      let finMonthlyPaid = 0;
+      let finMonthlyComponents = { builder: 0, interest: 0, bank: 0 };
+
+      if (isOffPlan) {
+        if (i <= constructionTerm) {
+          // Construction Phase
+          const bItem = constructionData.builder.find(x => x.month === i);
+          const iItem = constructionData.interest.find(x => x.month === i);
+
+          const bVal = bItem ? bItem.total : 0;
+          const iVal = iItem ? iItem.interestPayment : 0;
+
+          // Accumulated: (Sum of previous) + Current
+          // Need precise accumulated. 
+          // builderSim.schedule[i-1].accumulated + interestSim...
+          // Easiest is to sum explicitly or grab from pre-calc schedules
+          const bAcc = bItem ? bItem.accumulated : (constructionData.builder[constructionData.builder.length - 1]?.accumulated || 0);
+          const iAcc = iItem ? iItem.accumulated : (constructionData.interest[constructionData.interest.length - 1]?.accumulated || 0);
+
+          finAccumulated = bAcc + iAcc;
+          finMonthlyPaid = bVal + iVal;
+          finMonthlyComponents = { builder: bVal, interest: iVal, bank: 0 };
+        } else {
+          // Amortization Phase (i > constructionTerm)
+          const bankMonth = i - constructionTerm;
+          const fItem = finResult.schedule.find(x => x.month === bankMonth);
+
+          if (fItem) {
+            finAccumulated = constructionAccumulated + fItem.accumulated;
+            finMonthlyPaid = fItem.regularPMT + fItem.extra;
+            finMonthlyComponents = { builder: 0, interest: 0, bank: finMonthlyPaid };
+          } else {
+            // Finished bank loan
+            finAccumulated = constructionAccumulated + (finResult.schedule[finResult.schedule.length - 1]?.accumulated || 0);
+            finMonthlyPaid = 0;
+          }
+        }
+      } else {
+        // Standard
+        const fItem = finResult.schedule.find(x => x.month === i);
+        if (fItem) {
+          finAccumulated = finDownPayment + fItem.accumulated;
+          finMonthlyPaid = fItem.regularPMT + fItem.extra;
+        } else {
+          finAccumulated = finDownPayment + (finResult.schedule[finResult.schedule.length - 1]?.accumulated || 0);
+          finMonthlyPaid = 0;
+        }
+      }
+
+      const cItem = consResult.schedule.find(x => x.month === i);
+      const consAccumulated = cItem ? consDownPayment + cItem.accumulated : (finalData[i - 1]?.consortium || consTotal);
+      const consMonthlyPaid = cItem ? cItem.regularPMT + cItem.bid : 0;
+
+      // Map construction data to table columns
+      let tableRegularPMT = 0;
+      let tableInterest = 0;
+      let tableAmort = 0;
+      let tableBalance = 0;
+      let tableExtra = 0;
+
+      if (isOffPlan && i <= constructionTerm) {
+        // Construction Phase
+        tableRegularPMT = finMonthlyPaid;
+        tableInterest = constructionData.interest.find(x => x.month === i)?.interestPayment || 0;
+        tableAmort = constructionData.builder.find(x => x.month === i)?.total || 0;
+        tableBalance = constructionData.interest.find(x => x.month === i)?.disbursedAmount || 0;
+      } else if (isOffPlan && i > constructionTerm) {
+        // Off-Plan Bank Phase
+        const bankMonth = i - constructionTerm;
+        const fItem = finResult.schedule.find(x => x.month === bankMonth);
+        if (fItem) {
+          tableRegularPMT = fItem.regularPMT;
+          tableInterest = fItem.interest;
+          tableAmort = fItem.amortization;
+          tableBalance = fItem.balance;
+          tableExtra = fItem.extra;
+        }
+      } else if (!isOffPlan) {
+        // Standard
+        const fItem = finResult.schedule.find(x => x.month === i);
+        if (fItem) {
+          tableRegularPMT = fItem.regularPMT;
+          tableInterest = fItem.interest;
+          tableAmort = fItem.amortization;
+          tableBalance = fItem.balance;
+          tableExtra = fItem.extra;
+        }
+      }
+
       finalData.push({
-        month: i + 1,
-        financing: fin ? finDownPayment + fin.accumulated : finalData[finalData.length - 1].financing,
-        consortium: cons ? consDownPayment + cons.accumulated : finalData[finalData.length - 1].consortium,
-        financingMonthlyPaid: fin ? fin.regularPMT + fin.extra : 0,
-        consortiumMonthlyPaid: cons ? cons.regularPMT + cons.bid : 0,
-        finInterest: fin ? fin.interest : 0,
-        finAmortization: fin ? fin.amortization : 0,
-        finRegularPMT: fin ? fin.regularPMT : 0,
-        finExtra: fin ? fin.extra : 0,
-        finBalance: fin ? fin.balance : 0,
-        consRegularPMT: cons ? cons.regularPMT : 0,
-        consBid: cons ? cons.bid : 0,
+        month: i,
+        financing: finAccumulated,
+        consortium: consAccumulated,
+        financingMonthlyPaid: finMonthlyPaid,
+        consortiumMonthlyPaid: consMonthlyPaid,
+        // Components for Stacked Area
+        finBuilder: finMonthlyComponents?.builder || 0,
+        finIntObra: finMonthlyComponents?.interest || 0,
+        finBankPMT: finMonthlyComponents?.bank || (isOffPlan ? 0 : finMonthlyPaid),
+        // Table Columns
+        finRegularPMT: tableRegularPMT,
+        finInterest: tableInterest,
+        finAmortization: tableAmort,
+        finBalance: tableBalance,
+        finExtra: tableExtra,
+        consRegularPMT: cItem ? cItem.regularPMT : 0,
+        consBid: cItem ? cItem.bid : 0,
       });
     }
 
@@ -423,6 +675,8 @@ function App() {
   }, [
     finAssetValue, finTermMonths, finDownPayment, financingRate, finIOF, finInsurance, finEvents, finAmortStrategy, amortMethod,
     consAssetValue, consTermMonths, consDownPayment, consortiumAdminRate, consInsurance, consReserveFund, inflationRate, consEvents, bidStrategy,
+    // Off-Plan deps
+    isOffPlan, constructionTerm, builderMonthly, builderBalloons, builderHandover, constructionRate, assetType
   ]);
 
   const { data, financingTotal, consortiumTotal, financingInitialPMT, consortiumInitialPMT } = simulationData;
@@ -434,23 +688,40 @@ function App() {
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
+      const dataItem = payload[0].payload;
+
       return (
-        <div className="bg-slate-800 border-none rounded-lg p-3 shadow-xl text-slate-50">
-          <p className="font-bold mb-2">Mês {label}</p>
-          {payload.map((entry, index) => (
-            <div key={index} className="mb-2 last:mb-0">
-              <div className="flex items-center gap-2 font-semibold" style={{ color: entry.color }}>
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-                {entry.name === finLabel ? finLabel : entry.name === consLabel ? consLabel : entry.name}
-              </div>
-              <div className="ml-4 text-xs text-slate-300">
-                Acumulado: {formatCurrency(entry.value)}
-              </div>
-              <div className="ml-4 text-xs text-yellow-300">
-                Parcela: {formatCurrency(entry.payload[entry.dataKey === 'financing' ? 'financingMonthlyPaid' : 'consortiumMonthlyPaid'])}
-              </div>
+        <div className="bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl p-4 shadow-2xl text-slate-50 min-w-[200px]">
+          <p className="font-bold mb-3 text-slate-200 border-b border-slate-700 pb-2">Mês {label}</p>
+
+          {/* Financing Group */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-red-400">{finLabel}</span>
+              <span className="text-xs text-slate-400">Total Acum: {formatCurrency(dataItem.financing)}</span>
             </div>
-          ))}
+            <div className="text-xl font-bold text-white mb-1">
+              {formatCurrency(dataItem.financingMonthlyPaid)} <span className="text-xs font-normal text-slate-400">/mês</span>
+            </div>
+            {isOffPlan && dataItem.financingMonthlyPaid > 0 && (
+              <div className="text-xs space-y-1 pl-2 border-l-2 border-slate-700 my-2">
+                {dataItem.finBuilder > 0 && <div className="flex justify-between text-orange-300"><span>Construtora:</span> <span>{formatCurrency(dataItem.finBuilder)}</span></div>}
+                {dataItem.finIntObra > 0 && <div className="flex justify-between text-red-300"><span>Juros Obra:</span> <span>{formatCurrency(dataItem.finIntObra)}</span></div>}
+                {dataItem.finBankPMT > 0 && <div className="flex justify-between text-blue-300"><span>Banco:</span> <span>{formatCurrency(dataItem.finBankPMT)}</span></div>}
+              </div>
+            )}
+          </div>
+
+          {/* Consortium Group */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-emerald-400">{consLabel}</span>
+              <span className="text-xs text-slate-400">Total Acum: {formatCurrency(dataItem.consortium)}</span>
+            </div>
+            <div className="text-xl font-bold text-white">
+              {formatCurrency(dataItem.consortiumMonthlyPaid)} <span className="text-xs font-normal text-slate-400">/mês</span>
+            </div>
+          </div>
         </div>
       );
     }
@@ -574,6 +845,34 @@ function App() {
               <div className="text-xs text-slate-500 mb-1">Parcela Inicial Estimada (c/ Taxas)</div>
               <div className="text-lg font-semibold text-slate-700">{formatCurrency(financingInitialPMT)}</div>
             </div>
+
+            {assetType === 'property' && (
+              <div className="mb-6 p-4 bg-orange-50 rounded-xl border border-orange-100">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="font-bold text-orange-800 text-sm">Imóvel na Planta?</span>
+                  <button
+                    onClick={() => setIsOffPlan(!isOffPlan)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${isOffPlan ? 'bg-orange-500' : 'bg-slate-300'}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isOffPlan ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+
+                {isOffPlan && (
+                  <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <SliderInput label="Prazo de Obra (Meses)" value={constructionTerm} min={12} max={60} step={1} onChange={setConstructionTerm} />
+                    <SliderInput label="Parcela Mensal (Construtora)" value={builderMonthly} min={0} max={20000} step={100} prefix="R$ " onChange={setBuilderMonthly} />
+                    <SliderInput label="Reforços Anuais (Balloons)" value={builderBalloons} min={0} max={100000} step={1000} prefix="R$ " onChange={setBuilderBalloons} />
+                    <SliderInput label="Chaves (Entrega)" value={builderHandover} min={0} max={200000} step={1000} prefix="R$ " onChange={setBuilderHandover} />
+                    <SliderInput label="INCC Est. (% a.a.)" value={constructionRate} min={0} max={15} step={0.1} suffix="%" onChange={setConstructionRate} />
+
+                    <div className="text-xs text-orange-600 bg-orange-100 p-2 rounded">
+                      <strong>Nota:</strong> O saldo devedor será corrigido pelo INCC durante a obra. O financiamento bancário começará após a entrega das chaves.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <ToggleGroup
               label="Estratégia de Amortização Extra"
@@ -732,7 +1031,44 @@ function App() {
           </div>
           <div className="mt-4 flex items-center gap-2 text-sm text-slate-500 bg-slate-50 p-3 rounded-lg">
             <AlertCircle className="w-4 h-4 text-slate-400 flex-shrink-0" />
-            <p>Os valores do consórcio sofrem reajuste anual (IPCA). O financiamento usa {amortMethod === 'sac' ? 'SAC (parcelas decrescentes)' : 'Price (parcelas fixas)'}.</p>
+            <p>Este gráfico mostra o <strong>Total Acumulado Pago</strong> (Patrimônio + Juros) ao longo do tempo.</p>
+          </div>
+        </div>
+
+        {/* Monthly Payment Chart (Stacked Area for Off-Plan) */}
+        <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 flex flex-col min-h-[400px] sm:min-h-[500px] mt-8">
+          <h2 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
+            <TrendingUp className="w-5 h-5 text-indigo-600" />
+            Fluxo de Caixa Mensal (Compromisso)
+          </h2>
+          <div className="flex-1 w-full min-h-0">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                <XAxis dataKey="month" stroke="#94A3B8" tickLine={false} axisLine={false} tickFormatter={(value) => `${value}m`} />
+                <YAxis stroke="#94A3B8" tickLine={false} axisLine={false} tickFormatter={(value) => `R$ ${(value / 1000).toFixed(0)}k`} />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend iconType="circle" />
+
+                {/* Consortium Line */}
+                <Area type="monotone" dataKey="consortiumMonthlyPaid" name={consLabel} stroke="#10B981" fill="#10B981" fillOpacity={0.1} strokeWidth={2} />
+
+                {/* Financing Stacked */}
+                {isOffPlan ? (
+                  <>
+                    <Area type="step" dataKey="finBuilder" stackId="1" name="Construtora (Mensal+Balão)" stroke="#F97316" fill="#F97316" fillOpacity={0.6} />
+                    <Area type="monotone" dataKey="finIntObra" stackId="1" name="Juros de Obra" stroke="#EF4444" fill="#EF4444" fillOpacity={0.4} />
+                    <Area type="monotone" dataKey="finBankPMT" stackId="1" name="Financiamento Bancário" stroke="#3B82F6" fill="#3B82F6" fillOpacity={0.6} />
+                  </>
+                ) : (
+                  <Area type="monotone" dataKey="financingMonthlyPaid" name={finLabel} stroke="#EF4444" fill="#EF4444" fillOpacity={0.1} strokeWidth={2} />
+                )}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-4 flex items-center gap-2 text-sm text-slate-500 bg-slate-50 p-3 rounded-lg">
+            <AlertCircle className="w-4 h-4 text-slate-400 flex-shrink-0" />
+            <p>Este gráfico mostra o <strong>Fluxo de Caixa Mensal</strong> (o quanto você desembolsa a cada mês). Valores empilhados mostram a composição da parcela.</p>
           </div>
         </div>
 
@@ -744,8 +1080,16 @@ function App() {
             </h3>
             <ul className="space-y-2 text-sm text-slate-600">
               <li className="flex justify-between"><span>{config.labels.value}:</span> <strong>{formatCurrency(finAssetValue)}</strong></li>
-              <li className="flex justify-between"><span>Entrada:</span> <strong>{formatCurrency(finDownPayment)}</strong></li>
-              <li className="flex justify-between"><span>Prazo:</span> <strong>{finTermMonths} meses</strong></li>
+              {isOffPlan ? (
+                <>
+                  <li className="flex justify-between text-orange-600 bg-orange-50 px-1 rounded"><span>Imóvel na Planta:</span> <strong>Sim</strong></li>
+                  <li className="flex justify-between"><span>Prazo Obra:</span> <strong>{constructionTerm} m</strong></li>
+                  <li className="flex justify-between"><span>Total Construtora:</span> <strong>{formatCurrency((builderMonthly * constructionTerm) + (builderBalloons * Math.floor(constructionTerm / 12)) + builderHandover)}</strong></li>
+                </>
+              ) : (
+                <li className="flex justify-between"><span>Entrada:</span> <strong>{formatCurrency(finDownPayment)}</strong></li>
+              )}
+              <li className="flex justify-between"><span>Prazo (Financ.):</span> <strong>{finTermMonths} meses</strong></li>
               <li className="flex justify-between"><span>Sistema:</span> <strong>{amortMethod === 'sac' ? 'SAC' : 'Price'}</strong></li>
               <li className="flex justify-between"><span>Taxa de Juros:</span> <strong>{financingRate}% a.a.</strong></li>
               <li className="flex justify-between"><span>IOF:</span> <strong>{finIOF}%</strong></li>
@@ -812,8 +1156,8 @@ function App() {
             </table>
           </div>
         </div>
-      </main>
-    </div>
+      </main >
+    </div >
   );
 }
 
